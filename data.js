@@ -62,6 +62,31 @@ window.YAMPA_DATA = {
       rollPoints: 200,
       defeatFadeTime: 0.5,
     },
+    // Cow — bigger, slower, harder to dodge but worth more.
+    cow: {
+      spriteScale: 0.75,
+      walkSpeed: 35,
+      bodyWidth: 86,
+      bodyHeight: 68,
+      patrolRange: 200,
+      walkAnimFps: 3.5,
+      stompPoints: 300,
+      rollPoints: 300,
+      defeatFadeTime: 0.6,
+    },
+    // Mushroom — small, quick, hard to land on. Lower hitbox punishes the
+    // "stomp from above" approach unless you're precise.
+    mushroom: {
+      spriteScale: 0.55,
+      walkSpeed: 80,
+      bodyWidth: 50,
+      bodyHeight: 52,
+      patrolRange: 130,
+      walkAnimFps: 6,
+      stompPoints: 250,
+      rollPoints: 250,
+      defeatFadeTime: 0.5,
+    },
   },
 
   ball: {
@@ -71,6 +96,15 @@ window.YAMPA_DATA = {
     bobAmplitude: 5,
     bobSpeed: 3.0,
     sparkleSpinSpeed: 4.0,
+    // Super tennis balls — flagged in level data with `super: true`. They
+    // glow with a pulsing radial halo, render slightly larger, and pay
+    // `points * superMultiplier`. Placed at high-reward positions (peaks
+    // of arcs, top platforms) to reward precision and risk-taking.
+    superMultiplier: 5,
+    superSpriteScale: 0.36,
+    superGlowRadius: 34,
+    superGlowPulseSpeed: 5.5,
+    superBobAmplitude: 7,
   },
 
   // Binary mud "shield":
@@ -100,11 +134,11 @@ window.YAMPA_DATA = {
   // `levelGlobal` is the window-level name the level script writes to.
   difficulties: {
     easy:   { name: 'Easy',   tint: '#7dd45b', levelGlobal: 'YAMPA_LEVEL_EASY',
-              tagline: 'gentle intro · 7 chickens · 1 level world' },
+              tagline: 'chickens only · 20 k world' },
     medium: { name: 'Medium', tint: '#f0b020', levelGlobal: 'YAMPA_LEVEL_MEDIUM',
-              tagline: 'zig-zag platforms · 22 chickens · 1× world' },
+              tagline: 'chickens + cows · 40 k world' },
     hard:   { name: 'Hard',   tint: '#e0584b', levelGlobal: 'YAMPA_LEVEL_HARD',
-              tagline: 'skyway jumps · 60+ chickens · 2× world' },
+              tagline: 'all three enemies · 80 k world' },
   },
 
   assets: {
@@ -145,6 +179,16 @@ window.YAMPA_DATA = {
         walk:    ['assets/enemies/chicken_walk1.png',
                   'assets/enemies/chicken_walk2.png'],
         defeated: 'assets/enemies/chicken_defeated.png',
+      },
+      cow: {
+        walk:    ['assets/enemies/cow_walk1.png',
+                  'assets/enemies/cow_walk2.png'],
+        defeated: 'assets/enemies/cow_defeated.png',
+      },
+      mushroom: {
+        walk:    ['assets/enemies/mushroom_a_walk1.png',
+                  'assets/enemies/mushroom_a_walk2.png'],
+        defeated: 'assets/enemies/mushroom_a_defeated.png',
       },
     },
     env: {

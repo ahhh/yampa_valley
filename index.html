@@ -445,9 +445,10 @@
   // 7. TENNIS BALL
   // ============================================================
   class TennisBall {
-    constructor(x, y) {
+    constructor(x, y, isSuper) {
       this.baseX = x;
       this.baseY = y;
+      this.isSuper = !!isSuper;
       this.collected = false;
       this.sparkleTime = 0;
       this.bobOffset = Math.random() * Math.PI * 2;
@@ -457,15 +458,35 @@
     }
     get x() { return this.baseX; }
     get y() {
-      return this.baseY + Math.sin(this.sparkleTime * D.ball.bobSpeed + this.bobOffset) *
-             D.ball.bobAmplitude;
+      const amp = this.isSuper ? D.ball.superBobAmplitude : D.ball.bobAmplitude;
+      return this.baseY + Math.sin(this.sparkleTime * D.ball.bobSpeed + this.bobOffset) * amp;
     }
     draw() {
       if (this.collected) return;
-      // Alternate ball + sparkle frames for a subtle shine
-      const showSparkle = Math.floor(this.sparkleTime * D.ball.sparkleSpinSpeed) % 4 === 0;
+      // Super balls get a pulsing radial halo drawn behind the sprite.
+      if (this.isSuper) {
+        const t = this.sparkleTime;
+        const pulse = 0.75 + 0.25 * Math.sin(t * D.ball.superGlowPulseSpeed + this.bobOffset);
+        const r = D.ball.superGlowRadius * pulse;
+        const gx = this.x - game.camera.x;
+        const gy = this.y - game.camera.y;
+        const grad = ctx.createRadialGradient(gx, gy, 0, gx, gy, r);
+        grad.addColorStop(0,    'rgba(255, 244, 130, 0.85)');
+        grad.addColorStop(0.45, 'rgba(255, 220,  80, 0.40)');
+        grad.addColorStop(1,    'rgba(255, 220,  80, 0)');
+        const prevComp = ctx.globalCompositeOperation;
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = grad;
+        ctx.fillRect(gx - r, gy - r, r * 2, r * 2);
+        ctx.globalCompositeOperation = prevComp;
+      }
+      // Sprite — super balls always use the sparkle frame and render bigger;
+      // regular balls alternate sparkle/ball for a subtle shine.
+      const showSparkle = this.isSuper ||
+        Math.floor(this.sparkleTime * D.ball.sparkleSpinSpeed) % 4 === 0;
       const img = showSparkle ? envImage('tennisBallSparkle') : envImage('tennisBall');
-      drawSprite(img, this.x, this.y, D.ball.spriteScale, false, 0.5, 0.5);
+      const scale = this.isSuper ? D.ball.superSpriteScale : D.ball.spriteScale;
+      drawSprite(img, this.x, this.y, scale, false, 0.5, 0.5);
     }
   }
 
@@ -515,12 +536,13 @@
       this.enemies = (lvl.enemies || []).map(
         (e) => new Enemy(e.type, e.x, e.y));
       this.balls = (lvl.tennisBalls || []).map(
-        (b) => new TennisBall(b.x, b.y));
+        (b) => new TennisBall(b.x, b.y, b.super));
       this.particles = [];
       this.camera = { x: 0, y: 0 };
       this.time = 0;
       this.score = 0;
       this.ballsCollected = 0;
+      this.superBallsCollected = 0;
       this.paused = false;
       this.finishedTimer = 0;
     }
@@ -633,15 +655,24 @@
       this.enemies.forEach((e) => e.update(dt, this));
       this.balls.forEach((b) => b.update(dt));
 
-      // Ball pickup
+      // Ball pickup — super balls pay D.ball.superMultiplier × points and
+      // spawn extra sparkles for a satisfying grab.
       const pb = p.body();
       for (const b of this.balls) {
         if (b.collected) continue;
         if (rectCircleOverlap(pb, b.x, b.y, D.ball.radius)) {
           b.collected = true;
-          this.score += D.ball.points;
-          this.ballsCollected += 1;
-          this.spawnSparkle(b.x, b.y);
+          if (b.isSuper) {
+            this.score += D.ball.points * D.ball.superMultiplier;
+            this.superBallsCollected += 1;
+            // Bigger burst for super balls
+            this.spawnSparkle(b.x, b.y);
+            this.spawnSparkle(b.x, b.y);
+          } else {
+            this.score += D.ball.points;
+            this.ballsCollected += 1;
+            this.spawnSparkle(b.x, b.y);
+          }
         }
       }
 
@@ -828,7 +859,14 @@
 
       ctx.textAlign = 'left';
       ctx.fillText('SCORE  ' + this.score.toString().padStart(5, '0'), 16, 22);
-      ctx.fillText('🎾 ' + this.ballsCollected + ' / ' + this.balls.length, 200, 22);
+      const totalRegular = this.balls.length - this.balls.filter((b) => b.isSuper).length;
+      const totalSuper   = this.balls.length - totalRegular;
+      ctx.fillText('🎾 ' + this.ballsCollected + ' / ' + totalRegular, 200, 22);
+      if (totalSuper > 0) {
+        ctx.fillStyle = '#f9d56b';
+        ctx.fillText('✨ ' + this.superBallsCollected + ' / ' + totalSuper, 300, 22);
+        ctx.fillStyle = '#fff';
+      }
 
       // Mud shield badge — binary, lights up when the dog has mud absorbed.
       const mx = 350, my = 10, mw = 96, mh = 26;
@@ -972,13 +1010,20 @@
 
     // Score breakdown: each gameplay loop contributes its own line so the
     // player can see exactly where the points came from.
-    const ballPts   = game.ballsCollected * D.ball.points;
-    const stompedN  = game.enemies.filter((e) => e.dead).length;
-    const stompPts  = stompedN * D.enemy.chicken.stompPoints;
-    const mudPts    = game.player.mudPatchesGathered * D.mud.bonusPerPatch;
-    const secsUnder = Math.max(0, D.timeBonus.parSeconds - game.time);
-    const timePts   = Math.floor(secsUnder * D.timeBonus.pointsPerSecondSaved);
-    const total     = ballPts + stompPts + mudPts + timePts;
+    const totalRegularBalls = game.balls.filter((b) => !b.isSuper).length;
+    const totalSuperBalls   = game.balls.filter((b) => b.isSuper).length;
+    const ballPts    = game.ballsCollected * D.ball.points;
+    const superPts   = game.superBallsCollected * D.ball.points * D.ball.superMultiplier;
+    // Each enemy type pays its own stompPoints — chickens 200, cows 300,
+    // mushrooms 250 — so we sum by enemy type rather than count × constant.
+    const deadEnemies = game.enemies.filter((e) => e.dead);
+    const stompedN   = deadEnemies.length;
+    const stompPts   = deadEnemies.reduce(
+      (sum, e) => sum + (D.enemy[e.type].stompPoints || 0), 0);
+    const mudPts     = game.player.mudPatchesGathered * D.mud.bonusPerPatch;
+    const secsUnder  = Math.max(0, D.timeBonus.parSeconds - game.time);
+    const timePts    = Math.floor(secsUnder * D.timeBonus.pointsPerSecondSaved);
+    const total      = ballPts + superPts + stompPts + mudPts + timePts;
 
     // Lay out the breakdown as two columns: label on the left, bonus on the
     // right (both flush so the +N column reads top-to-bottom).
@@ -988,8 +1033,10 @@
       ['Difficulty',        D.difficulties[game.difficulty].name, null],
       ['Time',              formatTime(game.time),
                             secsUnder > 0 ? '+' + timePts : '+0'],
-      ['Tennis balls',      game.ballsCollected + ' / ' + game.balls.length,
+      ['Tennis balls',      game.ballsCollected + ' / ' + totalRegularBalls,
                             '+' + ballPts],
+      ['Super balls ✨',    game.superBallsCollected + ' / ' + totalSuperBalls,
+                            '+' + superPts],
       ['Enemies stomped',   stompedN.toString(),
                             '+' + stompPts],
       ['Mud patches',       game.player.mudPatchesGathered.toString(),

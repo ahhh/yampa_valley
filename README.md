@@ -109,11 +109,19 @@ ball trails, mud patches and chicken placements. Levels live in
 and [`levels/hard.js`](levels/hard.js); `data.js` only carries tuning,
 asset paths, and the difficulty-to-level mapping.
 
-| Difficulty | World width | Terrain rects | Mud patches | Tennis balls | Chickens | Feel |
-|---|---|---|---|---|---|---|
-| Easy   | 20 000 px | 25  | 3 | 107 | 7  | gentle intro to every mechanic |
-| Medium | 20 000 px | 48  | 4 | 98  | 22 | zig-zag platforms, chickens on landings |
-| Hard   | 40 000 px | 100 | 7 | 176 | 73 | skyway jumps, chicken-coop frenzy, 2× length |
+| Difficulty | World width | Terrain rects | Mud patches | Tennis balls (super) | Enemies | Mix | Feel |
+|---|---|---|---|---|---|---|---|
+| Easy   | 20 000 px | 25  |  3 | 107 (4)  |   7 | chickens only             | gentle intro to every mechanic |
+| Medium | 40 000 px | 82  |  5 | 136 (5)  |  41 | chickens + cows           | denser platforms, heavier ground threats |
+| Hard   | 80 000 px | 190 | 11 | 250 (8)  | 129 | chickens + cows + mushrooms | skyway jumps, mushroom-fast obstacles, 2× length |
+
+Enemy roster (configs in `data.js → enemy`):
+
+| Enemy | Width × Height | Speed | Patrol | Stomp pts | Notes |
+|---|---|---|---|---|---|
+| Chicken  | 60 × 56 |  55 px/s | ±80 px  | 200 | baseline patrol |
+| Cow      | 86 × 68 |  35 px/s | ±100 px | 300 | big & slow — commit to the stomp |
+| Mushroom | 50 × 52 |  80 px/s | ±65 px  | 250 | small & fast — easy to miss |
 
 Every level follows the same six-section structure (per the
 [design plan](yampa_valley_game_plan.md)) — Gentle Start, Momentum
