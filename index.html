@@ -684,11 +684,18 @@
     updateCamera(dt) {
       const p = this.player;
       const px = p.x + p.w * 0.5;
-      // Lookahead scales slightly with current speed — the camera leans
-      // further ahead when the dog is really moving, which sells the rush.
-      const speedLean = clamp(Math.abs(p.vx) / D.player.maxRunSpeed, 0, 1);
-      const lookahead = S.cameraLookahead * (1 + 0.35 * speedLean) *
-                        p.facing * (p.state === 'finished' ? 0 : 1);
+      // Lookahead direction follows ACTUAL velocity, not the input facing.
+      // Pressing left while still drifting right makes the dog brake; the
+      // camera shouldn't snap perspective the moment a key is tapped, only
+      // once his momentum has truly reversed. Normalizing vx by maxRunSpeed
+      // gives a smooth fade through zero — at full-tilt the camera leans
+      // ~1.35× lookahead in the direction of travel, and at a dead stop
+      // the camera is centered on the dog.
+      const finishedScale = (p.state === 'finished' ? 0 : 1);
+      const velNorm = clamp(p.vx / D.player.maxRunSpeed, -1, 1);
+      const speedMag = Math.abs(velNorm);
+      const lookahead = S.cameraLookahead * velNorm *
+                        (1 + 0.35 * speedMag) * finishedScale;
       const targetX = px + lookahead - S.canvasWidth * 0.5;
       const clampedX = clamp(targetX, 0, this.level.width - S.canvasWidth);
       this.camera.x = lerp(this.camera.x, clampedX, clamp(dt * 6.0, 0, 1));
