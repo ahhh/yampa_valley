@@ -229,7 +229,125 @@ async function main() {
   expect(sanity.hasCoverAsset, 'cover art declared in assets.ui.cover');
   expect(sanity.hasSoundtrack, 'soundtrack declared in audio');
 
-  // ---- 11. dump player snapshot for debug ----
+  // ---- 11. super ball: instantiated, glowing, worth 5× ----
+  info('Verifying super balls render and pay 5×');
+  const superCheck = await page.evaluate(() => {
+    const g = window.YAMPA.game;
+    const D = window.YAMPA_DATA;
+    const supers = g.balls.filter((b) => b.isSuper);
+    // Find one not yet collected and not too far behind us
+    const target = supers.find((b) => !b.collected);
+    return {
+      total: supers.length,
+      anyHasGlowParams: supers.length === 0 ? null : {
+        glowR: D.ball.superGlowRadius,
+        mult:  D.ball.superMultiplier,
+        scale: D.ball.superSpriteScale,
+      },
+      sampleAttrs: target ? {
+        x: target.baseX, y: target.baseY,
+        isSuper: target.isSuper,
+      } : null,
+    };
+  });
+  expect(superCheck.total > 0, `super balls instantiated (${superCheck.total} in active world)`);
+  expect(superCheck.anyHasGlowParams && superCheck.anyHasGlowParams.mult === 5,
+    `super multiplier is 5× (got ${superCheck.anyHasGlowParams?.mult})`);
+  expect(superCheck.sampleAttrs && superCheck.sampleAttrs.isSuper === true,
+    `super ball instance carries isSuper=true`);
+
+  // Drive the player onto a super ball and confirm the score jumps by 500
+  // not 100 (i.e. the 5× math is wired all the way through).
+  const beforePickup = await page.evaluate(() => ({
+    score: window.YAMPA.game.score,
+    superN: window.YAMPA.game.superBallsCollected,
+    balls: window.YAMPA.game.balls.map((b) => ({
+      x: b.baseX, y: b.baseY, isSuper: !!b.isSuper, collected: b.collected,
+    })),
+  }));
+  // Teleport — easier than driving across the world. We poke directly into
+  // the live player so we can stand under a super ball.
+  const teleported = await page.evaluate(() => {
+    const p = window.YAMPA.game.player;
+    const target = window.YAMPA.game.balls.find((b) => b.isSuper && !b.collected);
+    if (!target) return null;
+    p.x = target.baseX - p.w * 0.5;
+    p.vx = 0;
+    return { x: p.x, ballY: target.baseY };
+  });
+  if (teleported) {
+    await page.waitForTimeout(200);  // let pickup loop fire
+    const afterPickup = await page.evaluate(() => ({
+      score: window.YAMPA.game.score,
+      superN: window.YAMPA.game.superBallsCollected,
+    }));
+    expect(afterPickup.superN === beforePickup.superN + 1,
+      `super-ball counter incremented (${beforePickup.superN} → ${afterPickup.superN})`);
+    expect(afterPickup.score - beforePickup.score >= 500,
+      `score jumped by ≥500 on super-ball pickup (Δ=${afterPickup.score - beforePickup.score})`);
+  } else {
+    fail('no super ball available to test pickup');
+  }
+
+  // ---- 12. mud tiles actually apply mud ----
+  info('Verifying every mud tile applies the mud shield');
+  const mudResult = await page.evaluate(async () => {
+    const g  = window.YAMPA.game;
+    const D  = window.YAMPA_DATA;
+    const p  = g.player;
+    const mudRects = g.level.terrain.filter((t) => t.surface === 'mud');
+    const results = [];
+    for (const m of mudRects) {
+      // Reset the player onto this patch in rolling state.
+      p.muddy = false;
+      p.x = m.x + m.w * 0.5 - p.w * 0.5;
+      p.y = m.y - p.h;
+      p.vx = 0;
+      p.vy = 0;
+      p.state = 'rolling';
+      p.rollTimer = 0;
+      p.onGround = true;
+      p.muddySurface = true;
+      p.lastMudPatchX = -Infinity;
+      // Run a couple of frames manually to trigger pickup
+      const dt = 1 / 60;
+      const fakeInp = { left: false, right: false, jumpHeld: false, jumpDown: false,
+                        roll: true, rollDown: false, pauseDown: false, confirm: false };
+      for (let i = 0; i < 6; i++) p.update(dt, fakeInp, g);
+      results.push({ x: m.x, w: m.w, became_muddy: p.muddy });
+    }
+    return results;
+  });
+  const mudPassed = mudResult.filter((r) => r.became_muddy).length;
+  expect(mudPassed === mudResult.length,
+    `every mud rect applies mud (${mudPassed}/${mudResult.length})`);
+  if (mudPassed < mudResult.length) {
+    mudResult.filter((r) => !r.became_muddy).slice(0, 5).forEach((r) =>
+      console.log(`    mud at x=${r.x} w=${r.w} did NOT apply muddy`));
+  }
+
+  // ---- 13. enemies actually walking on a tile (no floaters) ----
+  info('Verifying every enemy stands on a terrain tile');
+  const enemyCheck = await page.evaluate(() => {
+    const g = window.YAMPA.game;
+    const D = window.YAMPA_DATA;
+    const floaters = [];
+    for (const e of g.enemies) {
+      const cfg = D.enemy[e.type];
+      const floorY = e.y + e.h;        // bottom of the enemy
+      const cx = e.x + e.w * 0.5;
+      const on = g.level.terrain.find((t) =>
+        t.y === floorY && t.x <= cx && cx <= t.x + t.w);
+      if (!on) floaters.push({ type: e.type, x: e.x, y: e.y, floorY });
+    }
+    return { total: g.enemies.length, floaters };
+  });
+  expect(enemyCheck.floaters.length === 0,
+    `all ${enemyCheck.total} enemies stand on a terrain tile`);
+  enemyCheck.floaters.slice(0, 5).forEach((f) =>
+    console.log(`    ${f.type} at (${f.x},${f.y}) — floor ${f.floorY} has no tile`));
+
+  // ---- 14. dump player snapshot for debug ----
   const snap = await page.evaluate(() => {
     const p = window.YAMPA.game.player;
     const g = window.YAMPA.game;
@@ -240,6 +358,7 @@ async function main() {
       mudPatchesGathered: p.mudPatchesGathered,
       facing: p.facing,
       score: g.score, balls: g.ballsCollected,
+      superBalls: g.superBallsCollected,
       time: g.time.toFixed(2),
       enemiesAlive: g.enemies.filter(e => !e.dead).length,
     };

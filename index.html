@@ -412,12 +412,35 @@
         return;
       }
       this.x += this.vx * dt;
-      // Turn around at patrol bounds
+
+      // Turn around at whichever comes first: the patrol bound, or the edge
+      // of the terrain rect we're standing on. The second case stops the
+      // enemy from floating off the side of a small platform when its
+      // patrol range exceeds the platform width.
+      const cx = this.x + this.w * 0.5;
+      const floorY = this.y + this.h;
       const half = C.patrolRange * 0.5;
-      if (this.x + this.w * 0.5 < this.spawnX - half) {
+      const halfBody = this.w * 0.5;
+
+      // Find a terrain rect whose top sits exactly under our feet. If we're
+      // floating (shouldn't happen given the level validator), fall back to
+      // pure patrol-bound turnaround.
+      let leftLimit  = this.spawnX - half;
+      let rightLimit = this.spawnX + half;
+      for (const t of world.level.terrain) {
+        if (t.y !== floorY) continue;
+        if (t.x > cx || t.x + t.w < cx) continue;
+        leftLimit  = Math.max(leftLimit,  t.x + halfBody);
+        rightLimit = Math.min(rightLimit, t.x + t.w - halfBody);
+        break;
+      }
+
+      if (cx < leftLimit) {
+        this.x = leftLimit - this.w * 0.5;
         this.vx = Math.abs(this.vx);
         this.facing = 1;
-      } else if (this.x + this.w * 0.5 > this.spawnX + half) {
+      } else if (cx > rightLimit) {
+        this.x = rightLimit - this.w * 0.5;
         this.vx = -Math.abs(this.vx);
         this.facing = -1;
       }

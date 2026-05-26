@@ -6,8 +6,10 @@
   "description": "Browser-driven smoke tests for Yampa Valley (Playwright).",
   "scripts": {
     "install-browsers": "playwright install chromium",
+    "validate": "node validate_levels.mjs",
     "smoke": "node smoke.mjs",
-    "smoke:headed": "HEADED=1 node smoke.mjs"
+    "smoke:headed": "HEADED=1 node smoke.mjs",
+    "test": "node validate_levels.mjs && node smoke.mjs"
   },
   "devDependencies": {
     "playwright": "^1.49.0"

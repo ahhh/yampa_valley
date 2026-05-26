@@ -436,7 +436,7 @@ window.YAMPA_LEVEL_HARD = {
     { type: 'mushroom', x: 10800, y: 380 },                         // first mushroom!
     { type: 'cow',     x: 11500, y: 500 },
     { type: 'chicken', x: 11950, y: 340 },
-    { type: 'chicken', x: 12640, y: 220 },                          // peak A
+    { type: 'chicken', x: 12800, y: 220 },                          // centered on peak A platform
     { type: 'mushroom', x: 13400, y: 340 },
     { type: 'chicken', x: 14000, y: 500 },
     { type: 'cow',     x: 14700, y: 500 },
@@ -489,7 +489,7 @@ window.YAMPA_LEVEL_HARD = {
     { type: 'chicken', x: 40500, y: 170 },
     { type: 'chicken', x: 40900, y: 150 },                          // VERY TOP
     { type: 'mushroom', x: 41530, y: 190 },
-    { type: 'chicken', x: 42400, y: 330 },
+    { type: 'chicken', x: 42630, y: 330 },                          // centered on descent platform
     { type: 'cow',     x: 43100, y: 500 },
     { type: 'chicken', x: 44000, y: 360 },
     { type: 'mushroom', x: 44700, y: 240 },
@@ -503,8 +503,8 @@ window.YAMPA_LEVEL_HARD = {
     { type: 'mushroom', x: 50600, y: 340 },
     { type: 'chicken', x: 51400, y: 420 },
     { type: 'cow',     x: 52200, y: 500 },
-    { type: 'chicken', x: 53000, y: 340 },
-    { type: 'mushroom', x: 53800, y: 420 },
+    { type: 'chicken', x: 53210, y: 340 },                          // moved onto its tail platform
+    { type: 'mushroom', x: 54110, y: 420 },                         // centered on tail platform
     { type: 'chicken', x: 54500, y: 500 },
 
     // S5 — Coop Frenzy. Maximum density across both routes.

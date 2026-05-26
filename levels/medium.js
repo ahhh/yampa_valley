@@ -251,15 +251,15 @@ window.YAMPA_LEVEL_MEDIUM = {
     { type: 'chicken', x: 15300, y: 500 },                     // after patch 3
     { type: 'cow',     x: 16900, y: 500 },                     // after patch 4
     { type: 'chicken', x: 18000, y: 500 },
-    { type: 'chicken', x: 18500, y: 380 },                     // on upper platform
+    { type: 'chicken', x: 18340, y: 380 },                     // centered on upper platform (was 18500 — off the right edge)
 
     // S4 — skyway, mostly chickens with cows on bigger platforms
     { type: 'chicken', x: 20300, y: 320 },
     { type: 'cow',     x: 21200, y: 200 },                     // on top reward
-    { type: 'chicken', x: 22300, y: 380 },
+    { type: 'chicken', x: 22510, y: 380 },                     // moved onto its platform (was 22300, before platform start)
     { type: 'chicken', x: 23900, y: 340 },
     { type: 'cow',     x: 24700, y: 240 },                     // peak B
-    { type: 'chicken', x: 25600, y: 400 },
+    { type: 'chicken', x: 25900, y: 400 },                     // moved onto its platform (was 25600, before platform)
     { type: 'cow',     x: 26300, y: 500 },
 
     // S5 — densest section
