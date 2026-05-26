@@ -1,0 +1,1144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Yampa Valley</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #0d1a14;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+    color: #f4e4b8;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  #wrap {
+    position: relative;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  canvas {
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    cursor: default;
+    background: #a7dcf2;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game"></canvas>
+</div>
+
+<script src="data.js"></script>
+<script src="levels/easy.js"></script>
+<script src="levels/medium.js"></script>
+<script src="levels/hard.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  const D = window.YAMPA_DATA;
+  const S = D.settings;
+
+  // ============================================================
+  // 1. CANVAS SETUP
+  // ============================================================
+  const canvas = document.getElementById('game');
+  canvas.width = S.canvasWidth;
+  canvas.height = S.canvasHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  // ============================================================
+  // 2. INPUT
+  // ============================================================
+  const keys = Object.create(null);
+  const pressedThisFrame = new Set();
+
+  document.addEventListener('keydown', (e) => {
+    if (!keys[e.code]) pressedThisFrame.add(e.code);
+    keys[e.code] = true;
+    const handled = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+                     'Space', 'KeyW', 'KeyA', 'KeyS', 'KeyD',
+                     'Escape', 'KeyP', 'Enter'];
+    if (handled.includes(e.code)) e.preventDefault();
+  });
+  document.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+  function readInput() {
+    return {
+      left:    keys.ArrowLeft  || keys.KeyA,
+      right:   keys.ArrowRight || keys.KeyD,
+      jumpHeld: keys.ArrowUp   || keys.KeyW || keys.Space,
+      jumpDown: pressedThisFrame.has('ArrowUp') ||
+                pressedThisFrame.has('KeyW') ||
+                pressedThisFrame.has('Space'),
+      roll:    keys.ArrowDown  || keys.KeyS,
+      rollDown: pressedThisFrame.has('ArrowDown') || pressedThisFrame.has('KeyS'),
+      pauseDown: pressedThisFrame.has('Escape') || pressedThisFrame.has('KeyP'),
+      confirm: pressedThisFrame.has('Enter') || pressedThisFrame.has('Space'),
+    };
+  }
+
+  // ============================================================
+  // 3. ASSET LOADING
+  // ============================================================
+  const images = Object.create(null);
+  let assetTotal = 0;
+  let assetDone = 0;
+
+  function collectPaths(obj, out) {
+    if (typeof obj === 'string') out.push(obj);
+    else if (Array.isArray(obj)) obj.forEach((v) => collectPaths(v, out));
+    else if (obj && typeof obj === 'object') Object.values(obj).forEach((v) => collectPaths(v, out));
+    return out;
+  }
+
+  function loadImage(path) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => { images[path] = img; assetDone++; resolve(img); };
+      img.onerror = () => reject(new Error('Failed to load: ' + path));
+      img.src = path;
+    });
+  }
+
+  function loadAllAssets() {
+    const paths = Array.from(new Set(collectPaths(D.assets, [])));
+    assetTotal = paths.length;
+    return Promise.all(paths.map(loadImage));
+  }
+
+  // ---- audio ----
+  // The browser blocks audio playback until the user interacts with the page,
+  // so we lazily construct the Audio element on the first key press and call
+  // .play() then. After that we just toggle pause/resume as needed.
+  const audio = {
+    el: null,
+    muted: false,
+    initialized: false,
+    init() {
+      if (this.initialized) return;
+      this.initialized = true;
+      const a = new Audio(D.audio.soundtrack);
+      a.loop = true;
+      a.volume = this.muted ? 0 : D.audio.soundtrackVolume;
+      a.preload = 'auto';
+      this.el = a;
+    },
+    play() {
+      if (!this.el) return;
+      this.el.play().catch(() => { /* ignored: not yet allowed */ });
+    },
+    pause() {
+      if (this.el) this.el.pause();
+    },
+    toggleMute() {
+      this.muted = !this.muted;
+      if (this.el) this.el.volume = this.muted ? 0 : D.audio.soundtrackVolume;
+    },
+  };
+
+  // Image accessors
+  const A = D.assets;
+  function dogImage(set, key, frameIdx) {
+    const entry = A.dog[set][key];
+    if (Array.isArray(entry)) return images[entry[frameIdx % entry.length]];
+    return images[entry];
+  }
+  function enemyImage(type, key, frameIdx) {
+    const entry = A.enemies[type][key];
+    if (Array.isArray(entry)) return images[entry[frameIdx % entry.length]];
+    return images[entry];
+  }
+  function envImage(key) { return images[A.env[key]]; }
+  function bgImage(key) { return images[A.backgrounds[key]]; }
+  function uiImage(key) { return images[A.ui[key]]; }
+
+  // ============================================================
+  // 4. UTILITIES
+  // ============================================================
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function sign(v) { return v < 0 ? -1 : (v > 0 ? 1 : 0); }
+
+  function rectOverlap(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x &&
+           a.y < b.y + b.h && a.y + a.h > b.y;
+  }
+  function rectCircleOverlap(rect, cx, cy, r) {
+    const nx = clamp(cx, rect.x, rect.x + rect.w);
+    const ny = clamp(cy, rect.y, rect.y + rect.h);
+    const dx = cx - nx, dy = cy - ny;
+    return dx * dx + dy * dy <= r * r;
+  }
+
+  // Draw a sprite anchored at (worldX, worldY) where (anchorX, anchorY) ∈ [0,1]²
+  // tells which point of the sprite touches (worldX, worldY).
+  // anchorX=0.5 anchorY=1.0 means draw with bottom-center at worldX,worldY.
+  function drawSprite(img, worldX, worldY, scale, flipX, anchorX = 0.5, anchorY = 1.0) {
+    if (!img) return;
+    const w = img.width * scale;
+    const h = img.height * scale;
+    const sx = Math.round(worldX - game.camera.x - w * anchorX);
+    const sy = Math.round(worldY - game.camera.y - h * anchorY);
+    if (flipX) {
+      ctx.save();
+      ctx.translate(sx + w, sy);
+      ctx.scale(-1, 1);
+      ctx.drawImage(img, 0, 0, w, h);
+      ctx.restore();
+    } else {
+      ctx.drawImage(img, sx, sy, w, h);
+    }
+  }
+
+  // ============================================================
+  // 5. PLAYER
+  // ============================================================
+  class Player {
+    constructor() {
+      const P = D.player;
+      this.w = P.bodyWidth;
+      this.h = P.bodyHeight;
+      this.x = P.startX;
+      this.y = S.groundY - this.h;
+      this.vx = 0;
+      this.vy = 0;
+      this.onGround = true;
+      this.facing = 1;             // 1 right, -1 left
+      this.state = 'idle';         // idle|running|jumping|rolling|hurt|finished
+      this.animTime = 0;
+      // Mud is binary: muddy=true means the next hit is absorbed as a shield.
+      // mudPatchesGathered counts how many distinct patches the player has
+      // rolled through this run (for end-of-level bonus scoring).
+      this.muddy = false;
+      this.mudPatchesGathered = 0;
+      this.lastMudPatchX = -Infinity;  // dedupe rapid re-entry into same patch
+      this.muddySurface = false;       // currently standing on a mud rect
+      this.invulnTimer = 0;
+      this.rollTimer = 0;
+      this.hurtTimer = 0;
+    }
+
+    body() { return { x: this.x, y: this.y, w: this.w, h: this.h }; }
+
+    isMuddyVisually() { return this.muddy; }
+
+    update(dt, inp, world) {
+      const P = D.player;
+      this.animTime += dt;
+
+      // ---- hurt timer ----
+      if (this.hurtTimer > 0) this.hurtTimer -= dt;
+      if (this.invulnTimer > 0) this.invulnTimer -= dt;
+      if (this.state === 'hurt' && this.hurtTimer <= 0) this.state = 'running';
+
+      // ---- finished: just decelerate ----
+      if (this.state === 'finished') {
+        this.vx *= Math.exp(-3 * dt);
+        this.applyMotion(dt, world);
+        return;
+      }
+
+      // ---- rolling state ----
+      if (this.state === 'rolling') {
+        this.rollTimer += dt;
+        // Exit roll if released and timer minimum elapsed, or auto-timeout
+        if ((!inp.roll && this.rollTimer > 0.3) || this.rollTimer > P.rollMaxDuration || !this.onGround) {
+          this.state = Math.abs(this.vx) > 30 ? 'running' : 'idle';
+          this.rollTimer = 0;
+        }
+      } else if (inp.rollDown && this.onGround && this.state !== 'hurt') {
+        this.state = 'rolling';
+        this.rollTimer = 0;
+        // Give a kick on entering roll so it feels punchy
+        if (Math.abs(this.vx) < P.rollMinSpeed) {
+          this.vx = P.rollMinSpeed * this.facing;
+        }
+      }
+
+      // ---- horizontal input ----
+      const dir = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
+      const ctlMul = this.onGround ? 1.0 : P.airControl;
+      const accelBase = this.state === 'rolling' ? P.acceleration * P.rollAccelerationBoost : P.acceleration;
+
+      if (dir !== 0 && this.state !== 'hurt') {
+        // Reversing direction at speed is heavier than starting from rest —
+        // the turnAroundBoost controls how aggressively the dog can fight
+        // his own momentum. Low values feel slippy / committal.
+        const turning = (dir * this.vx < 0) && Math.abs(this.vx) > 40;
+        const a = accelBase * (turning ? P.turnAroundBoost : 1.0) * ctlMul * dir;
+        this.vx += a * dt;
+        if (this.state !== 'rolling') this.facing = dir;
+      } else if (this.state !== 'hurt') {
+        // friction — mud patches do NOT add drag (binary skill mechanic).
+        const f = (this.state === 'rolling' ? P.rollFriction : P.friction) * ctlMul;
+        const decel = f * dt;
+        if (Math.abs(this.vx) <= decel) this.vx = 0;
+        else this.vx -= decel * sign(this.vx);
+      }
+
+      // Soft clamp: ramps and rolls can push you over maxRunSpeed briefly.
+      const speedCap = P.maxRunSpeed * P.speedClampMult;
+      this.vx = clamp(this.vx, -speedCap, speedCap);
+
+      // ---- jump ----
+      if (inp.jumpDown && this.onGround && this.state !== 'hurt') {
+        this.vy = P.jumpVelocity;
+        this.onGround = false;
+        this.state = 'jumping';
+        // Exit roll on jump (carry momentum)
+      }
+
+      // ---- gravity ----
+      this.vy += P.gravity * dt;
+      if (this.vy > 1200) this.vy = 1200;
+
+      // ---- state transitions (running/idle) ----
+      if (this.state !== 'hurt' && this.state !== 'rolling' && this.state !== 'jumping') {
+        if (!this.onGround) this.state = 'jumping';
+        else if (Math.abs(this.vx) > 35) this.state = 'running';
+        else this.state = 'idle';
+      }
+      if (this.state === 'jumping' && this.onGround) {
+        this.state = Math.abs(this.vx) > 35 ? 'running' : 'idle';
+      }
+
+      this.applyMotion(dt, world);
+
+      // ---- mud pickup ----
+      // Rolling through a mud patch becomes muddy. Walking over a mud patch
+      // does NOT — it's strictly a skill reward for using the roll mechanic.
+      // `lastMudPatchX` dedupes patches so a single physical patch only
+      // counts once even if the player oscillates inside it.
+      if (this.onGround && this.muddySurface && this.state === 'rolling') {
+        const patchKey = Math.floor(this.x / 60) * 60;  // bucket so re-entries within ~60px count once
+        const newPatch = patchKey !== this.lastMudPatchX;
+        if (newPatch || !this.muddy) {
+          if (!this.muddy && newPatch) this.mudPatchesGathered += 1;
+          this.muddy = true;
+          this.lastMudPatchX = patchKey;
+          // mud particles to sell the gather
+          for (let i = 0; i < D.mud.particlesOnGather; i++) {
+            world.spawnMudFleck(
+              this.x + this.w * 0.5 + (Math.random() - 0.5) * this.w * 0.8,
+              this.y + this.h - 4
+            );
+          }
+        }
+      }
+
+      // ---- world bounds ----
+      if (this.x < 0) { this.x = 0; this.vx = Math.max(0, this.vx); }
+      if (this.x + this.w > world.level.width) {
+        this.x = world.level.width - this.w; this.vx = Math.min(0, this.vx);
+      }
+    }
+
+    applyMotion(dt, world) {
+      // Move on X, resolve against terrain (none used as walls here — flat ground)
+      this.x += this.vx * dt;
+      // Move on Y, resolve against terrain (top surfaces)
+      this.y += this.vy * dt;
+      const collisions = world.collideWithTerrain(this);
+      this.onGround = collisions.onGround;
+      this.muddySurface = collisions.muddySurface;
+    }
+
+    draw() {
+      const P = D.player;
+      const set = this.isMuddyVisually() ? 'muddy' : 'clean';
+      let img;
+      // Pick frame by state
+      if (this.state === 'idle')        img = dogImage(set, 'idle', 0);
+      else if (this.state === 'running') {
+        const frames = A.dog[set].run.length;
+        img = dogImage(set, 'run', Math.floor(this.animTime * P.runAnimFps) % frames);
+      }
+      else if (this.state === 'jumping') img = dogImage(set, 'jump', 0);
+      else if (this.state === 'rolling') {
+        const frames = A.dog[set].roll.length;
+        img = dogImage(set, 'roll', Math.floor(this.animTime * P.rollAnimFps) % frames);
+      }
+      else if (this.state === 'hurt')    img = dogImage(set, 'hurt', 0);
+      else if (this.state === 'finished') img = dogImage(set, 'victory', 0);
+
+      const flip = this.facing < 0;
+      // Blink while invulnerable
+      if (this.invulnTimer > 0 && Math.floor(this.invulnTimer * 12) % 2 === 0) {
+        ctx.globalAlpha = 0.4;
+      }
+      const cx = this.x + this.w * 0.5;
+      const by = this.y + this.h + 6;  // tuck sprite a few px below body bottom for visual seat
+      drawSprite(img, cx, by, P.spriteScale, flip, 0.5, 1.0);
+      ctx.globalAlpha = 1.0;
+    }
+  }
+
+  // ============================================================
+  // 6. ENEMY (chicken)
+  // ============================================================
+  class Enemy {
+    constructor(type, spawnX, spawnY) {
+      const C = D.enemy[type];
+      this.type = type;
+      this.spawnX = spawnX;
+      this.x = spawnX - C.bodyWidth * 0.5;
+      this.y = spawnY - C.bodyHeight;
+      this.w = C.bodyWidth;
+      this.h = C.bodyHeight;
+      this.vx = -C.walkSpeed;          // start walking left
+      this.facing = -1;
+      this.dead = false;
+      this.deadTimer = 0;
+      this.animTime = 0;
+    }
+    body() { return { x: this.x, y: this.y, w: this.w, h: this.h }; }
+
+    update(dt, world) {
+      this.animTime += dt;
+      const C = D.enemy[this.type];
+      if (this.dead) {
+        this.deadTimer += dt;
+        return;
+      }
+      this.x += this.vx * dt;
+      // Turn around at patrol bounds
+      const half = C.patrolRange * 0.5;
+      if (this.x + this.w * 0.5 < this.spawnX - half) {
+        this.vx = Math.abs(this.vx);
+        this.facing = 1;
+      } else if (this.x + this.w * 0.5 > this.spawnX + half) {
+        this.vx = -Math.abs(this.vx);
+        this.facing = -1;
+      }
+    }
+
+    draw() {
+      const C = D.enemy[this.type];
+      let img;
+      if (this.dead) {
+        img = enemyImage(this.type, 'defeated', 0);
+        const t = clamp(this.deadTimer / C.defeatFadeTime, 0, 1);
+        ctx.globalAlpha = 1 - t;
+      } else {
+        const frames = A.enemies[this.type].walk.length;
+        img = enemyImage(this.type, 'walk', Math.floor(this.animTime * C.walkAnimFps) % frames);
+      }
+      const cx = this.x + this.w * 0.5;
+      const by = this.y + this.h + 4;
+      drawSprite(img, cx, by, C.spriteScale, this.facing < 0, 0.5, 1.0);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // ============================================================
+  // 7. TENNIS BALL
+  // ============================================================
+  class TennisBall {
+    constructor(x, y) {
+      this.baseX = x;
+      this.baseY = y;
+      this.collected = false;
+      this.sparkleTime = 0;
+      this.bobOffset = Math.random() * Math.PI * 2;
+    }
+    update(dt) {
+      this.sparkleTime += dt;
+    }
+    get x() { return this.baseX; }
+    get y() {
+      return this.baseY + Math.sin(this.sparkleTime * D.ball.bobSpeed + this.bobOffset) *
+             D.ball.bobAmplitude;
+    }
+    draw() {
+      if (this.collected) return;
+      // Alternate ball + sparkle frames for a subtle shine
+      const showSparkle = Math.floor(this.sparkleTime * D.ball.sparkleSpinSpeed) % 4 === 0;
+      const img = showSparkle ? envImage('tennisBallSparkle') : envImage('tennisBall');
+      drawSprite(img, this.x, this.y, D.ball.spriteScale, false, 0.5, 0.5);
+    }
+  }
+
+  // ============================================================
+  // 8. PARTICLES
+  // ============================================================
+  class Particle {
+    constructor(opts) {
+      Object.assign(this, opts);
+      this.life = opts.life;
+      this.maxLife = opts.life;
+    }
+    update(dt) {
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+      this.vy += (this.gravity || 0) * dt;
+      this.life -= dt;
+    }
+    draw() {
+      const t = clamp(this.life / this.maxLife, 0, 1);
+      ctx.globalAlpha = t;
+      ctx.fillStyle = this.color;
+      const r = this.r * (this.shrink ? t : 1);
+      ctx.beginPath();
+      ctx.arc(this.x - game.camera.x, this.y - game.camera.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // ============================================================
+  // 9. WORLD
+  // ============================================================
+  class World {
+    constructor(difficulty) {
+      this.difficulty = difficulty;
+      // Look up the level data for this difficulty. Each difficulty maps to
+      // a different window-level global written by levels/<diff>.js.
+      const lvlKey = D.difficulties[difficulty].levelGlobal;
+      const lvl = window[lvlKey];
+      if (!lvl) {
+        throw new Error('Level data not loaded: ' + lvlKey +
+                        ' (did levels/' + difficulty + '.js fail to load?)');
+      }
+      this.level = lvl;
+      this.player = new Player();
+      this.enemies = (lvl.enemies || []).map(
+        (e) => new Enemy(e.type, e.x, e.y));
+      this.balls = (lvl.tennisBalls || []).map(
+        (b) => new TennisBall(b.x, b.y));
+      this.particles = [];
+      this.camera = { x: 0, y: 0 };
+      this.time = 0;
+      this.score = 0;
+      this.ballsCollected = 0;
+      this.paused = false;
+      this.finishedTimer = 0;
+    }
+
+    spawnSparkle(x, y) {
+      for (let i = 0; i < 8; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = 40 + Math.random() * 60;
+        this.particles.push(new Particle({
+          x, y,
+          vx: Math.cos(a) * s,
+          vy: Math.sin(a) * s,
+          gravity: 200,
+          life: 0.45,
+          color: '#fff7a8',
+          r: 3,
+          shrink: true,
+        }));
+      }
+    }
+    spawnPuff(x, y, color = '#c89766') {
+      for (let i = 0; i < 14; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const s = 60 + Math.random() * 80;
+        this.particles.push(new Particle({
+          x, y,
+          vx: Math.cos(a) * s,
+          vy: Math.sin(a) * s - 40,
+          gravity: 300,
+          life: 0.55,
+          color,
+          r: 5,
+          shrink: true,
+        }));
+      }
+    }
+    spawnMudFleck(x, y) {
+      const a = -Math.PI / 2 + (Math.random() - 0.5) * 1.6;
+      const s = 90 + Math.random() * 70;
+      this.particles.push(new Particle({
+        x, y,
+        vx: Math.cos(a) * s,
+        vy: Math.sin(a) * s,
+        gravity: 500,
+        life: 0.45,
+        color: '#5a3a1c',
+        r: 2.5,
+        shrink: true,
+      }));
+    }
+
+    // For each platform rectangle, resolve top-surface collision against the player.
+    collideWithTerrain(p) {
+      let onGround = false;
+      let muddySurface = false;
+      for (const t of this.level.terrain) {
+        // overlap test
+        if (p.x + p.w > t.x && p.x < t.x + t.w &&
+            p.y + p.h > t.y && p.y < t.y + t.h) {
+          // resolve: only land on TOP if descending and feet were above last frame
+          if (p.vy >= 0 && (p.y + p.h) - p.vy * (1 / 60) <= t.y + 6) {
+            p.y = t.y - p.h;
+            p.vy = 0;
+            onGround = true;
+            if (t.surface === 'mud') muddySurface = true;
+          }
+        }
+      }
+      return { onGround, muddySurface };
+    }
+
+    killEnemy(e, byRoll) {
+      e.dead = true;
+      const C = D.enemy[e.type];
+      const pts = byRoll ? C.rollPoints : C.stompPoints;
+      this.score += pts;
+      this.spawnPuff(e.x + e.w * 0.5, e.y + e.h * 0.5, '#d9b27e');
+    }
+
+    hurtPlayer(e) {
+      const p = this.player;
+      // Muddy = shield. Absorb the hit: clean off the dog, brief invulnerability,
+      // a mud burst — but no knockback, no stun, no speed loss.
+      if (p.muddy) {
+        p.muddy = false;
+        p.invulnTimer = D.player.invulnTime * 0.6;
+        for (let i = 0; i < D.mud.particlesOnShield; i++) {
+          this.spawnMudFleck(
+            p.x + p.w * 0.5 + (Math.random() - 0.5) * p.w * 1.2,
+            p.y + p.h * 0.5 + (Math.random() - 0.5) * 20
+          );
+        }
+        return;
+      }
+      // Clean hit — full knockback + stun.
+      const dir = (p.x + p.w * 0.5) < (e.x + e.w * 0.5) ? -1 : 1;
+      p.vx = D.player.hurtKnockback * dir;
+      p.vy = D.player.hurtUpKick;
+      p.state = 'hurt';
+      p.hurtTimer = D.player.hurtDuration;
+      p.invulnTimer = D.player.invulnTime;
+      this.spawnPuff(p.x + p.w * 0.5, p.y + p.h * 0.5, '#f3d65b');
+    }
+
+    update(dt, inp) {
+      if (this.paused) return;
+      const p = this.player;
+      const wasFinished = p.state === 'finished';
+      p.update(dt, inp, this);
+      this.enemies.forEach((e) => e.update(dt, this));
+      this.balls.forEach((b) => b.update(dt));
+
+      // Ball pickup
+      const pb = p.body();
+      for (const b of this.balls) {
+        if (b.collected) continue;
+        if (rectCircleOverlap(pb, b.x, b.y, D.ball.radius)) {
+          b.collected = true;
+          this.score += D.ball.points;
+          this.ballsCollected += 1;
+          this.spawnSparkle(b.x, b.y);
+        }
+      }
+
+      // Enemy interactions
+      for (const e of this.enemies) {
+        if (e.dead) continue;
+        if (!rectOverlap(pb, e.body())) continue;
+        if (p.state === 'rolling') {
+          this.killEnemy(e, true);
+        } else if (p.vy > 60 && (p.y + p.h) <= e.y + e.h * 0.55) {
+          this.killEnemy(e, false);
+          p.vy = -540;
+        } else if (p.invulnTimer <= 0 && p.state !== 'hurt') {
+          this.hurtPlayer(e);
+        }
+      }
+
+      // Particles
+      for (const part of this.particles) part.update(dt);
+      this.particles = this.particles.filter((q) => q.life > 0);
+
+      // Finish detection
+      if (!wasFinished && p.x >= this.level.finishX) {
+        p.state = 'finished';
+        p.vx *= 0.5;
+      }
+      if (p.state === 'finished') {
+        this.finishedTimer += dt;
+        if (this.finishedTimer > 1.2 && gameState === 'playing') {
+          gameState = 'finished';
+        }
+      } else {
+        this.time += dt;
+      }
+
+      // Camera follow
+      this.updateCamera(dt);
+    }
+
+    updateCamera(dt) {
+      const p = this.player;
+      const px = p.x + p.w * 0.5;
+      // Lookahead scales slightly with current speed — the camera leans
+      // further ahead when the dog is really moving, which sells the rush.
+      const speedLean = clamp(Math.abs(p.vx) / D.player.maxRunSpeed, 0, 1);
+      const lookahead = S.cameraLookahead * (1 + 0.35 * speedLean) *
+                        p.facing * (p.state === 'finished' ? 0 : 1);
+      const targetX = px + lookahead - S.canvasWidth * 0.5;
+      const clampedX = clamp(targetX, 0, this.level.width - S.canvasWidth);
+      this.camera.x = lerp(this.camera.x, clampedX, clamp(dt * 6.0, 0, 1));
+      this.camera.y = 0;
+    }
+
+    // ---- drawing ----
+    draw() {
+      this.drawSky();
+      this.drawParallaxAlternating(D.parallax);    // bg_top / bg_bottom alternating
+      this.drawDecorations(0.85);                  // trees in mid-depth
+      this.drawDecorations(0.95);                  // sparse foreground trees
+      this.drawTerrain();
+      this.drawDecorations(1.0);                   // flowers, fences, barn, finish
+      this.balls.forEach((b) => b.draw());
+      this.enemies.forEach((e) => e.draw());
+      this.player.draw();
+      for (const part of this.particles) part.draw();
+      this.drawHUD();
+    }
+
+    drawSky() {
+      const grd = ctx.createLinearGradient(0, 0, 0, S.canvasHeight);
+      grd.addColorStop(0, S.skyTop);
+      grd.addColorStop(1, S.skyBottom);
+      ctx.fillStyle = grd;
+      ctx.fillRect(0, 0, S.canvasWidth, S.canvasHeight);
+    }
+
+    // Tile two panoramas across the background, alternating which one is
+    // drawn per tile. We address tiles by an integer world-tile index so a
+    // given slot in the world always picks the same image (no flicker as
+    // the camera moves). Each tile's height/Y is set per-image so the
+    // painted grass strip lines up with the in-game ground.
+    drawParallaxAlternating(cfg) {
+      const imgs = cfg.sequence.map(bgImage);
+      if (imgs.some((i) => !i)) return;
+      // Tile pitch is the width of the first image at scale — both images
+      // are the same width (sliced from the same source), so this is
+      // consistent.
+      const baseW = Math.round(imgs[0].width * cfg.scale);
+      const camBgX = this.camera.x * cfg.depth;
+      // Which world-tile is at the LEFT edge of the viewport?
+      const firstIdx = Math.floor(camBgX / baseW);
+      // Offset within that tile (positive, 0..baseW-1).
+      const inset = camBgX - firstIdx * baseW;
+      let screenX = -inset;
+      let idx = firstIdx;
+      const yOff = cfg.yOffset || 0;
+      while (screenX < S.canvasWidth) {
+        const img = imgs[((idx % imgs.length) + imgs.length) % imgs.length];
+        const w = Math.round(img.width * cfg.scale);
+        const h = Math.round(img.height * cfg.scale);
+        const drawY = S.groundY - h + yOff;
+        ctx.drawImage(img, Math.round(screenX), Math.round(drawY), w, h);
+        screenX += w;
+        idx += 1;
+      }
+    }
+
+    drawDecorations(depthFilter) {
+      for (const dec of this.level.decorations) {
+        if (Math.abs(dec.depth - depthFilter) > 0.01) continue;
+        const img =
+          dec.type === 'tree' ? envImage('tree') :
+          dec.type === 'background_hill' ? envImage('backgroundHill') :
+          dec.type === 'flower_decoration' ? envImage('flowerDecoration') :
+          dec.type === 'fence_piece' ? envImage('fencePiece') :
+          dec.type === 'barn' ? envImage('barn') :
+          dec.type === 'finish_sign' ? envImage('finishSign') : null;
+        if (!img) continue;
+        const wx = dec.x;
+        // Parallax: shift drawing X by (1 - depth) * camera.x
+        const drawX = wx;
+        const drawY = dec.y;
+        // Temporarily shift camera for drawSprite parallax
+        const savedCam = game.camera.x;
+        game.camera.x = savedCam * dec.depth;
+        drawSprite(img, drawX, drawY, dec.scale, false, 0.5, 1.0);
+        game.camera.x = savedCam;
+      }
+    }
+
+    drawTerrain() {
+      // Render each terrain rectangle as a row of tiles. The tile sprite is
+      // anchored bottom; we tile it horizontally across the top edge of the
+      // rectangle, then fill the body below with a solid color.
+      for (const t of this.level.terrain) {
+        const tileKey =
+          t.surface === 'grass' ? 'grassTile' :
+          t.surface === 'mud'   ? 'mudTile'   :
+          'dirtTile';
+        const img = envImage(tileKey);
+        if (!img) continue;
+        // Fill underneath with dirt-brown
+        const fillColor = t.surface === 'mud' ? '#4a2f12' : '#5a3a1c';
+        ctx.fillStyle = fillColor;
+        ctx.fillRect(
+          Math.round(t.x - this.camera.x),
+          Math.round(t.y + 24 - this.camera.y),
+          t.w,
+          t.h - 24
+        );
+        // Tile the top edge
+        const tileW = Math.round(img.width * 0.5);   // render tile at 0.5 scale
+        const tileH = Math.round(img.height * 0.5);
+        const startX = Math.floor((this.camera.x - t.x) / tileW) * tileW;
+        for (let dx = Math.max(0, startX); dx < t.w; dx += tileW) {
+          if (t.x + dx > this.camera.x + S.canvasWidth) break;
+          if (t.x + dx + tileW < this.camera.x) continue;
+          ctx.drawImage(
+            img,
+            Math.round(t.x + dx - this.camera.x),
+            Math.round(t.y - tileH * 0.15 - this.camera.y),
+            tileW,
+            tileH
+          );
+        }
+      }
+    }
+
+    drawHUD() {
+      // dark gradient strip at the top
+      ctx.fillStyle = 'rgba(0,0,0,0.42)';
+      ctx.fillRect(0, 0, S.canvasWidth, 44);
+
+      ctx.font = 'bold 16px -apple-system, Helvetica, sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#fff';
+
+      ctx.textAlign = 'left';
+      ctx.fillText('SCORE  ' + this.score.toString().padStart(5, '0'), 16, 22);
+      ctx.fillText('🎾 ' + this.ballsCollected + ' / ' + this.balls.length, 200, 22);
+
+      // Mud shield badge — binary, lights up when the dog has mud absorbed.
+      const mx = 350, my = 10, mw = 96, mh = 26;
+      const muddy = this.player.muddy;
+      ctx.fillStyle = muddy ? '#7a4a1f' : 'rgba(255,255,255,0.10)';
+      ctx.fillRect(mx, my, mw, mh);
+      ctx.strokeStyle = muddy ? '#f4cf85' : 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = muddy ? 2 : 1;
+      ctx.strokeRect(mx + 0.5, my + 0.5, mw - 1, mh - 1);
+      ctx.fillStyle = muddy ? '#fff' : 'rgba(255,255,255,0.55)';
+      ctx.font = 'bold 13px -apple-system, Helvetica, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(muddy ? 'MUD ✓ SHIELD' : 'no mud', mx + mw * 0.5, my + mh * 0.5);
+      ctx.font = 'bold 16px -apple-system, Helvetica, sans-serif';
+      ctx.textAlign = 'left';
+
+      // Timer
+      ctx.textAlign = 'right';
+      const t = this.time;
+      const mm = Math.floor(t / 60).toString().padStart(2, '0');
+      const ss = (t % 60).toFixed(1).padStart(4, '0');
+      ctx.fillText(mm + ':' + ss, S.canvasWidth - 16, 22);
+      // Difficulty tag
+      const diff = D.difficulties[this.difficulty];
+      ctx.fillStyle = diff.tint;
+      ctx.textAlign = 'right';
+      ctx.fillText(diff.name.toUpperCase(), S.canvasWidth - 96, 22);
+
+      // Progress bar (bottom)
+      const pw = S.canvasWidth - 32;
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.fillRect(16, S.canvasHeight - 8, pw, 4);
+      const progress = clamp(this.player.x / this.level.finishX, 0, 1);
+      ctx.fillStyle = '#f4e4b8';
+      ctx.fillRect(16, S.canvasHeight - 8, pw * progress, 4);
+    }
+  }
+
+  // ============================================================
+  // 10. SCREENS (title / paused / finished)
+  // ============================================================
+  function drawTitleScreen() {
+    // Cover art fills the canvas, preserving aspect via "cover" fit
+    // (any overflow is cropped). The cover already includes the "YAMPA
+    // VALLEY" wood sign, so we don't draw a title string on top.
+    const cover = uiImage('cover');
+    if (cover) {
+      const scale = Math.max(S.canvasWidth / cover.width,
+                             S.canvasHeight / cover.height);
+      const drawW = cover.width * scale;
+      const drawH = cover.height * scale;
+      ctx.drawImage(cover,
+        (S.canvasWidth - drawW) / 2,
+        (S.canvasHeight - drawH) / 2,
+        drawW, drawH);
+    } else {
+      const grd = ctx.createLinearGradient(0, 0, 0, S.canvasHeight);
+      grd.addColorStop(0, S.skyTop);
+      grd.addColorStop(1, S.skyBottom);
+      ctx.fillStyle = grd;
+      ctx.fillRect(0, 0, S.canvasWidth, S.canvasHeight);
+    }
+
+    // Dark band along the bottom so the difficulty selector is readable
+    // against the cover art.
+    const bandH = 156;
+    const bandGrd = ctx.createLinearGradient(0, S.canvasHeight - bandH, 0, S.canvasHeight);
+    bandGrd.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    bandGrd.addColorStop(0.45, 'rgba(0, 0, 0, 0.55)');
+    bandGrd.addColorStop(1, 'rgba(0, 0, 0, 0.75)');
+    ctx.fillStyle = bandGrd;
+    ctx.fillRect(0, S.canvasHeight - bandH, S.canvasWidth, bandH);
+
+    // Difficulty boxes
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const diffs = ['easy', 'medium', 'hard'];
+    const totalW = 720;
+    const boxW = 200, boxH = 72, gap = (totalW - boxW * 3) / 2;
+    const baseX = (S.canvasWidth - totalW) / 2;
+    const baseY = S.canvasHeight - bandH + 30;
+    diffs.forEach((key, i) => {
+      const x = baseX + i * (boxW + gap);
+      const selected = key === selectedDifficulty;
+      ctx.fillStyle = selected ? D.difficulties[key].tint : 'rgba(0, 0, 0, 0.45)';
+      ctx.fillRect(x, baseY, boxW, boxH);
+      ctx.strokeStyle = selected ? '#fff' : 'rgba(255, 255, 255, 0.55)';
+      ctx.lineWidth = selected ? 3 : 1;
+      ctx.strokeRect(x + 0.5, baseY + 0.5, boxW - 1, boxH - 1);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 22px -apple-system, Helvetica, sans-serif';
+      ctx.fillText(D.difficulties[key].name, x + boxW * 0.5, baseY + 22);
+      ctx.font = '11px -apple-system, Helvetica, sans-serif';
+      ctx.fillText(D.difficulties[key].tagline, x + boxW * 0.5, baseY + 50);
+    });
+
+    // Bottom-of-screen prompts laid out side-by-side on a single row:
+    //   LEFT  → menu prompt
+    //   RIGHT → in-game controls cheatsheet
+    const rowY = S.canvasHeight - 18;
+    const padX = 24;
+    ctx.fillStyle = '#fff';
+    ctx.font = '600 13px -apple-system, Helvetica, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('← / →  choose difficulty   ·   ENTER / SPACE  start',
+                 padX, rowY);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.78)';
+    ctx.font = '12px -apple-system, Helvetica, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText('move  · ↑ jump · ↓ roll · ESC pause · M mute',
+                 S.canvasWidth - padX, rowY);
+
+    // Mute indicator at top-right
+    drawMuteBadge();
+  }
+
+  function drawMuteBadge() {
+    if (audio.muted) {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+      ctx.fillRect(S.canvasWidth - 86, 12, 74, 22);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 12px -apple-system, Helvetica, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('MUTED · M', S.canvasWidth - 49, 23);
+    }
+  }
+
+  function drawFinishScreen() {
+    game.draw();
+    // dim
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 0, S.canvasWidth, S.canvasHeight);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#f9d56b';
+    ctx.font = 'bold 56px -apple-system, Helvetica, sans-serif';
+    ctx.fillText('Good Stompy!', S.canvasWidth * 0.5, 120);
+
+    // Score breakdown: each gameplay loop contributes its own line so the
+    // player can see exactly where the points came from.
+    const ballPts   = game.ballsCollected * D.ball.points;
+    const stompedN  = game.enemies.filter((e) => e.dead).length;
+    const stompPts  = stompedN * D.enemy.chicken.stompPoints;
+    const mudPts    = game.player.mudPatchesGathered * D.mud.bonusPerPatch;
+    const secsUnder = Math.max(0, D.timeBonus.parSeconds - game.time);
+    const timePts   = Math.floor(secsUnder * D.timeBonus.pointsPerSecondSaved);
+    const total     = ballPts + stompPts + mudPts + timePts;
+
+    // Lay out the breakdown as two columns: label on the left, bonus on the
+    // right (both flush so the +N column reads top-to-bottom).
+    const labelX = S.canvasWidth * 0.5 - 220;
+    const valueX = S.canvasWidth * 0.5 + 220;
+    const rows = [
+      ['Difficulty',        D.difficulties[game.difficulty].name, null],
+      ['Time',              formatTime(game.time),
+                            secsUnder > 0 ? '+' + timePts : '+0'],
+      ['Tennis balls',      game.ballsCollected + ' / ' + game.balls.length,
+                            '+' + ballPts],
+      ['Enemies stomped',   stompedN.toString(),
+                            '+' + stompPts],
+      ['Mud patches',       game.player.mudPatchesGathered.toString(),
+                            '+' + mudPts],
+    ];
+
+    ctx.font = '18px -apple-system, Helvetica, sans-serif';
+    ctx.textBaseline = 'middle';
+    rows.forEach(([label, value, bonus], i) => {
+      const y = 200 + i * 32;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
+      ctx.fillText(label, labelX, y);
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#fff';
+      ctx.fillText(value, labelX + 160, y);
+      if (bonus !== null) {
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#f9d56b';
+        ctx.fillText(bonus, valueX, y);
+      }
+    });
+
+    // Total
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#f9d56b';
+    ctx.font = 'bold 30px -apple-system, Helvetica, sans-serif';
+    ctx.fillText('FINAL SCORE   ' + total, S.canvasWidth * 0.5, 410);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = '13px -apple-system, Helvetica, sans-serif';
+    ctx.fillText('press ENTER or SPACE to play again',
+                 S.canvasWidth * 0.5, 460);
+  }
+
+  function drawPauseOverlay() {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(0, 0, S.canvasWidth, S.canvasHeight);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 40px -apple-system, Helvetica, sans-serif';
+    ctx.fillText('PAUSED', S.canvasWidth * 0.5, S.canvasHeight * 0.5);
+    ctx.font = '14px -apple-system, Helvetica, sans-serif';
+    ctx.fillText('press Esc to resume',
+                 S.canvasWidth * 0.5, S.canvasHeight * 0.5 + 30);
+  }
+
+  function drawLoadingScreen() {
+    ctx.fillStyle = '#0d1a14';
+    ctx.fillRect(0, 0, S.canvasWidth, S.canvasHeight);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#f4e4b8';
+    ctx.font = 'bold 22px -apple-system, Helvetica, sans-serif';
+    ctx.fillText('Loading...', S.canvasWidth * 0.5, S.canvasHeight * 0.5 - 10);
+    ctx.fillStyle = '#fff';
+    ctx.font = '14px -apple-system, Helvetica, sans-serif';
+    ctx.fillText(assetDone + ' / ' + assetTotal,
+                 S.canvasWidth * 0.5, S.canvasHeight * 0.5 + 18);
+  }
+
+  function formatTime(t) {
+    const mm = Math.floor(t / 60).toString().padStart(2, '0');
+    const ss = (t % 60).toFixed(2).padStart(5, '0');
+    return mm + ':' + ss;
+  }
+
+  // ============================================================
+  // 11. MAIN LOOP
+  // ============================================================
+  let gameState = 'loading';
+  let game = null;
+  let selectedDifficulty = 'medium';
+
+  function startGame(difficulty) {
+    selectedDifficulty = difficulty;
+    game = new World(difficulty);
+    gameState = 'playing';
+  }
+
+  function handleTitleInput(inp) {
+    const order = ['easy', 'medium', 'hard'];
+    const i = order.indexOf(selectedDifficulty);
+    if (pressedThisFrame.has('ArrowLeft') || pressedThisFrame.has('KeyA')) {
+      selectedDifficulty = order[(i + 2) % 3];
+    } else if (pressedThisFrame.has('ArrowRight') || pressedThisFrame.has('KeyD')) {
+      selectedDifficulty = order[(i + 1) % 3];
+    } else if (pressedThisFrame.has('Digit1')) selectedDifficulty = 'easy';
+    else if (pressedThisFrame.has('Digit2')) selectedDifficulty = 'medium';
+    else if (pressedThisFrame.has('Digit3')) selectedDifficulty = 'hard';
+
+    if (inp.confirm) startGame(selectedDifficulty);
+  }
+
+  let lastTs = 0;
+  function frame(ts) {
+    if (!lastTs) lastTs = ts;
+    let dt = (ts - lastTs) / 1000;
+    lastTs = ts;
+    if (dt > 1 / 20) dt = 1 / 20;     // clamp big stalls
+
+    const inp = readInput();
+
+    // Audio: lazily init once the user has interacted with the page (browser
+    // autoplay policy), and toggle mute on the M key from any screen.
+    if (pressedThisFrame.size > 0) audio.init();
+    if (pressedThisFrame.has('KeyM')) {
+      audio.toggleMute();
+      if (!audio.muted && (gameState === 'playing' || gameState === 'finished')) {
+        audio.play();
+      }
+    }
+
+    if (gameState === 'loading') {
+      drawLoadingScreen();
+    } else if (gameState === 'title') {
+      audio.pause();
+      handleTitleInput(inp);
+      drawTitleScreen();
+    } else if (gameState === 'playing') {
+      if (inp.pauseDown) game.paused = !game.paused;
+      if (game.paused) audio.pause(); else audio.play();
+      game.update(dt, inp);
+      game.draw();
+      drawMuteBadge();
+      if (game.paused) drawPauseOverlay();
+    } else if (gameState === 'finished') {
+      drawFinishScreen();
+      drawMuteBadge();
+      if (inp.confirm) {
+        gameState = 'title';
+      }
+    }
+
+    pressedThisFrame.clear();
+    requestAnimationFrame(frame);
+  }
+
+  // ============================================================
+  // BOOT
+  // ============================================================
+  drawLoadingScreen();
+  loadAllAssets()
+    .then(() => { gameState = 'title'; })
+    .catch((err) => {
+      console.error(err);
+      ctx.fillStyle = '#e0584b';
+      ctx.font = '14px monospace';
+      ctx.fillText('Asset load failed: ' + err.message, 16, 80);
+    });
+  requestAnimationFrame(frame);
+
+  // Expose for console debugging
+  window.YAMPA = { get game() { return game; }, get state() { return gameState; } };
+})();
+</script>
+</body>
+</html>
