@@ -122,7 +122,7 @@ def crossfade_loop_edges(panel: Image.Image, fade_w: int = 80) -> Image.Image:
 # search + crossfade. Tweak this if the boundary element at the wrap looks
 # too tree-shaped or too bush-shaped — smaller value = more visible
 # vegetation at the seam, larger value = the edge content shrinks.
-EDGE_CROP = 2
+EDGE_CROP = 5
 
 im = trim_dark_edges(im)
 im = trim_dirt_below_grass(im)

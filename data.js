@@ -8,10 +8,11 @@ window.YAMPA_DATA = {
   settings: {
     canvasWidth: 960,
     canvasHeight: 540,
-    groundY: 460,
+    groundY: 500,            // floor lives near canvas bottom so the in-game
+                             // tiles cover the dirt fill — no exposed brown bar
     skyTop: '#a7dcf2',
     skyBottom: '#e6f4a8',
-    cameraLookahead: 180,    // bigger so the camera leads at high speed
+    cameraLookahead: 180,
     cameraDeadZone: 60,
   },
 
